@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass
 
 from . import metrics
-from .mock_llm import FakeLLM
+from .mock_llm import FakeLLM, estimate_cost
 from .mock_rag import retrieve
 from .pii import hash_user_id, summarize_text
 from .prompt_management import resolve_prompt
@@ -59,7 +59,19 @@ class LabAgent:
                 message=message,
                 enabled=tracing_enabled(),
             )
+            # retrieve() và FakeLLM.generate() tự tạo child observation
+            # (retriever/generation) qua @observe trong mock_rag/mock_llm.
+            with propagate_attributes(prompt=prompt.managed_prompt):
+                response = self.llm.generate(prompt.text)
+            quality_score = self._heuristic_quality(message, response.text, docs)
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            cost_usd = self._estimate_cost(response.usage.input_tokens, response.usage.output_tokens)
+            # Ghi sau khi đã có response để span gốc mang đủ cả input lẫn output.
+            # capture_input/capture_output đã tắt ở decorator nên SDK không tự ghi
+            # tham số thô; ở đây chỉ gửi preview đã scrub PII và cắt ngắn.
             langfuse_client.update_current_span(
+                input={"query_preview": summarize_text(message)},
+                output={"answer_preview": summarize_text(response.text)},
                 metadata={
                     "doc_count": len(docs),
                     "query_preview": summarize_text(message),
@@ -71,13 +83,6 @@ class LabAgent:
                 },
                 version=prompt.version,
             )
-            # TODO (CP2): instrument retrieve() and FakeLLM.generate() as child
-            # observations. The nested generation must receive prompt, usage and cost.
-            with propagate_attributes(prompt=prompt.managed_prompt):
-                response = self.llm.generate(prompt.text)
-            quality_score = self._heuristic_quality(message, response.text, docs)
-            latency_ms = int((time.perf_counter() - started) * 1000)
-            cost_usd = self._estimate_cost(response.usage.input_tokens, response.usage.output_tokens)
 
         metrics.record_request(
             latency_ms=latency_ms,
@@ -99,9 +104,7 @@ class LabAgent:
         )
 
     def _estimate_cost(self, tokens_in: int, tokens_out: int) -> float:
-        input_cost = (tokens_in / 1_000_000) * 3
-        output_cost = (tokens_out / 1_000_000) * 15
-        return round(input_cost + output_cost, 6)
+        return estimate_cost(tokens_in, tokens_out)
 
     def _heuristic_quality(self, question: str, answer: str, docs: list[str]) -> float:
         score = 0.5

@@ -1,4 +1,5 @@
 service: day13-l3a-monitoring-llmops-lab
+
 primary_slo:
   name: fast_successful_requests
   window: 28d
@@ -7,9 +8,69 @@ primary_slo:
     total_event: 'event == "request_received"'
   target_percent: 99.5
   error_budget_percent: 0.5
-  note: Học viên phải giải thích hoặc điều chỉnh ngưỡng bằng baseline của mình.
+  note: >-
+    Giữ nguyên ngưỡng 3000 ms / 99.5% sau khi đối chiếu baseline. Baseline đo
+    được 98.889% (89/90 request <= 3000 ms) tức ĐANG TRƯỢT SLO, nhưng nguyên
+    nhân là một outlier đơn lẻ ở đuôi phân bố (max 3449 ms, P99 3449 ms) chứ
+    không phải latency nền cao: P50 chỉ 153 ms và TTFT rất ổn định ở 50 ms.
+    Nới ngưỡng lên ~3500 ms sẽ làm SLO "đạt" một cách giả tạo và che mất lỗi
+    thật, nên giữ 3000 ms để SLO còn bắt được sự cố (đúng vai trò cảnh báo).
+
+sli_definition:
+  numerator: 'count(response_sent where latency_ms <= 3000)'
+  denominator: 'count(request_received)'
+  unit: percent
+  evaluated_over: 60m rolling (dashboard) / 28d (SLO)
+
+baseline_2026_09_29:
+  request_received: 90
+  response_sent: 90
+  request_failed: 0
+  good_requests: 89
+  good_percent: 98.889
+  latency_ms: {p50: 153, p95: 1203, p99: 3449, max: 3449}
+  ttft_ms: {p50: 50, p95: 50, max: 54}
+  quality_score_mean: 0.874
+  quality_score_min: 0.80
+  retrieval_success_percent: 100.0
+  error_rate_percent: 0.0
+  cost_usd_total: 0.1824
+  tokens: {input: 3092, output: 11541}
+
+error_budget:
+  target_percent: 99.5
+  budget_percent: 0.5
+  window: 28d
+  window_minutes: 40320
+  allowed_bad_minutes: 201.6
+  note_mua_28_ngay: >-
+    Với 28 ngày = 40.320 phút, ngân sách lỗi 0,5% tương đương khoảng 201,6
+    phút (khoảng 3 giờ 22 phút) được phép vi phạm trong cả cửa sổ.
+  observed_2026_09_29:
+    good_requests: 89
+    bad_requests: 1
+    total_requests: 90
+    allowed_bad_requests: 0.45
+    budget_consumed_percent: 222.2
+    breached: true
+  interpretation: >-
+    Cửa sổ quan sát chỉ có 90 request nên ngân sách cho phép đúng 0,45 request
+    chậm; một request 3449 ms đã vượt ngân sách (222% ngân sách). Kết luận:
+    phải xử lý đuôi latency (P99) trước khi tăng lưu lượng, chứ không phải nới
+    SLO. Đây cũng chính là hành vi mà alert 1 canh.
+
 guardrails:
   error_rate_pct_max: 2
   daily_cost_usd_max: 2.5
   quality_score_avg_min: 0.75
   retrieval_success_rate_pct_min: 90
+
+guardrail_baseline_check:
+  error_rate_percent: {observed: 0.0, max: 2, status: ok}
+  quality_score_mean: {observed: 0.874, min: 0.75, status: ok}
+  retrieval_success_percent: {observed: 100.0, min: 90, status: ok}
+  cost_usd_per_request: {observed: 0.002, max_per_day: 2.5, status: ok}
+  note: >-
+    Ba guardrail còn lại đều đang an toàn trong baseline. Riêng cost chỉ chạm
+    trần 2,5 USD/ngày nếu vượt khoảng 1.230 request/ngày ở mức giá hiện tại
+    (~0,002 USD/request) - đây là cơ sở cho alert 3.

@@ -1,25 +1,65 @@
+# Ba alert symptom-based: moi alert mo ta TRIEU CHUNG nguoi dung gap phai,
+# khong mo ta ten ham/hang doi noi bo. Dieu kien do tren SLI lay tu
+# data/logs.jsonl (xem config/dashboard.yaml de biet truong tuong ung).
 alerts:
-  - name: TODO_alert_1
-    severity: TODO
-    condition: TODO
-    duration: TODO
+  - name: chat_latency_p95_high
+    symptom: Nguoi dung cho cau tra loi qua lau (chat co cam giac bi treo).
+    severity: critical
     type: symptom-based
+    condition: >-
+      percentile(latency_ms, 95) cua event "response_sent" > 3000 trong 5 phut
+    expression: 'p95(response_sent.latency_ms, 5m) > 3000'
+    duration: 5m
     channel: slack
-    owner: TODO
+    slack_channel: '#alerts-oncall'
+    owner: on-call LLMOps
     runbook: docs/alerts.md#alert-1
-  - name: TODO_alert_2
-    severity: TODO
-    condition: TODO
-    duration: TODO
+    related_slo: primary_slo.fast_successful_requests
+    related_guardrail: null
+
+  - name: chat_failure_and_retrieval_degraded
+    symptom: >-
+      Nguoi dung nhan loi, hoac nhan cau tra loi khong dua tren tai lieu
+      (retrieval that bai -> tra loi thieu ngu canh).
+    severity: critical
     type: symptom-based
+    condition: >-
+      error_rate_pct > 2 trong 2 phut, HOAC tool_success_rate_pct < 90 trong 3 phut
+    expression: >-
+      (count(request_failed, 2m) / count(request_received, 2m) * 100 > 2)
+      OR (tool_success_rate_pct, 3m) < 90
+    duration: 2m
     channel: slack
-    owner: TODO
+    slack_channel: '#alerts-critical'
+    owner: on-call LLMOps
     runbook: docs/alerts.md#alert-2
-  - name: TODO_alert_3
-    severity: TODO
-    condition: TODO
-    duration: TODO
+    related_slo: guardrails.retrieval_success_rate_pct_min
+    related_guardrail: guardrails.error_rate_pct_max
+
+  - name: llm_cost_burn_high
+    symptom: >-
+      Chi phi LLM tang bat thuong so voi luu luong - rui ro vuot ngan sach
+      thang du cho chat luong khong tang.
+    severity: warning
     type: symptom-based
+    condition: >-
+      tong cost_usd trong 10 phut > 0.35 USD (tuong duong > 2.1 USD/gio,
+      vuot guardrail 2.5 USD/ngay neu duy tri)
+    expression: 'sum(response_sent.cost_usd, 10m) > 0.35'
+    duration: 10m
     channel: slack
-    owner: TODO
+    slack_channel: '#alerts-cost'
+    owner: LLMOps owner
     runbook: docs/alerts.md#alert-3
+    related_slo: guardrails.daily_cost_usd_max
+    related_guardrail: guardrails.daily_cost_usd_max
+
+defaults:
+  notify: slack
+  group_by: [alertname, feature, env]
+  inhibit:
+    - source: chat_failure_and_retrieval_degraded
+      target: chat_latency_p95_high
+      reason: >-
+        Khi request dang loi han, latency P95 thuong tang theo; giam nhieu de
+        on-call tap trung vao nguyen nhan goc.
